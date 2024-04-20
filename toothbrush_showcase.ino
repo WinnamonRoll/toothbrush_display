@@ -1,5 +1,4 @@
 /*
-edel+white toothbrushes display
  author: Yongyutha Kunapinun
 version: 1.0.1
    note: for PCB version 1.0 with Arduino Nano Every
