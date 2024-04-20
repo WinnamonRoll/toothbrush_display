@@ -1,7 +1,7 @@
 /*
 edel+white toothbrushes display
  author: Yongyutha Kunapinun
-version: 1.0.0
+version: 1.0.1
    note: for PCB version 1.0 with Arduino Nano Every
 */
 #include <SPI.h>
@@ -10,30 +10,29 @@ version: 1.0.0
 #include <Adafruit_SSD1306.h>
 #include <HX711.h>
 
-#define STEP_1_PIN 3
-#define STEP_2_PIN 5
-#define DIR_1_PIN 2
-#define DIR_2_PIN 4
-// These two states keep track of where the moving blocks are on rail 1 and rail 2, respectively
-//(assuming that the moving blocks always move to their destinations without any interruption.)
-// -1: unknown (when starting up the system)
-//  0: The block's position is at the starting point.
-//  1: The block's position is at the end point.
-int rail_1_state = -1;
-int rail_2_state = -1;
-// by changing the delay between steps we can change the rotation speed
+#define RAIL_1_STP_PIN 3
+#define RAIL_2_STP_PIN 5
+#define RAIL_1_DIR_PIN 2
+#define RAIL_2_DIR_PIN 4
+// These two variables keep track of where the moving blocks are on rail 1 and rail 2, respectively
+int rail_1_abs_stp = -1;
+int rail_2_abs_stp = -1;
+// delay parameters below are used for toggle-to-move mode
 // maximum value of the step delay ramp (when a stepper is at its slowest)
 #define MAX_STEP_DELAY 1000
 // minimum value of the step delay ramp (when a stepper is at its fastest)
 #define MIN_STEP_DELAY 250
 // slope of the step delay ramp (must be negative)
 #define STEP_RAMP_DOWN_SLOPE -10
-#define LIM_SW_1_PIN 6
-#define LIM_SW_2_PIN 7
-#define BTN_1_PIN 14
-#define BTN_2_PIN 15
-#define BTN_3_PIN 16
-#define BTN_4_PIN 17
+#define MAX_RAIL_1_ABS_STP 15000
+#define MAX_RAIL_2_ABS_STP 5000
+#define MAX_RAIL_STP 15000
+#define RAIL_1_LIM_SW_PIN 6
+#define RAIL_2_LIM_SW_PIN 7
+#define RAIL_1_FWD_BTN_PIN 14
+#define RAIL_1_BWD_BTN_PIN 15
+#define RAIL_2_FWD_BTN_PIN 16
+#define RAIL_2_BWD_BTN_PIN 17
 // OLED display width, in pixels
 #define SCREEN_WIDTH 128
 // OLED display height, in pixels
@@ -54,16 +53,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // depends on each loadcell, obained from calibration 
 #define WEIGHT_SCLAE_FACTOR 100.82
 HX711 scale;
-
-void display_text(Adafruit_SSD1306 display, char *string){
-  // Clear the buffer
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(10, 0);
-  display.println(string);
-  display.display();
-}
 
 int ramp_down_step_delay(int min_delay, int max_delay, int down_slope, int step) {
   if (min_delay < 0) {
@@ -102,17 +91,17 @@ void step_backward(int stepper_number, int step_delay) {
     return -1;
   }
   if (stepper_number == 1) {
-    digitalWrite(DIR_1_PIN, HIGH);
-    digitalWrite(STEP_1_PIN, HIGH);
+    digitalWrite(RAIL_1_DIR_PIN, HIGH);
+    digitalWrite(RAIL_1_STP_PIN, HIGH);
     delayMicroseconds(step_delay);
-    digitalWrite(STEP_1_PIN, LOW);
+    digitalWrite(RAIL_1_STP_PIN, LOW);
     delayMicroseconds(step_delay);
     return 0; 
   } else if (stepper_number == 2) {
-    digitalWrite(DIR_2_PIN, HIGH);
-    digitalWrite(STEP_2_PIN, HIGH);
+    digitalWrite(RAIL_2_DIR_PIN, HIGH);
+    digitalWrite(RAIL_2_STP_PIN, HIGH);
     delayMicroseconds(step_delay);
-    digitalWrite(STEP_2_PIN, LOW);
+    digitalWrite(RAIL_2_STP_PIN, LOW);
     delayMicroseconds(step_delay);
     return 0; 
   } else {
@@ -127,23 +116,33 @@ int step_forward(int stepper_number, int step_delay) {
     return -1;
   }
   if (stepper_number == 1) {
-    digitalWrite(DIR_1_PIN, LOW);
-    digitalWrite(STEP_1_PIN, HIGH);
+    digitalWrite(RAIL_1_DIR_PIN, LOW);
+    digitalWrite(RAIL_1_STP_PIN, HIGH);
     delayMicroseconds(step_delay);
-    digitalWrite(STEP_1_PIN, LOW);
+    digitalWrite(RAIL_1_STP_PIN, LOW);
     delayMicroseconds(step_delay);
     return 0; 
   } else if (stepper_number == 2) {
-    digitalWrite(DIR_2_PIN, LOW);
-    digitalWrite(STEP_2_PIN, HIGH);
+    digitalWrite(RAIL_2_DIR_PIN, LOW);
+    digitalWrite(RAIL_2_STP_PIN, HIGH);
     delayMicroseconds(step_delay);
-    digitalWrite(STEP_2_PIN, LOW);
+    digitalWrite(RAIL_2_STP_PIN, LOW);
     delayMicroseconds(step_delay);
     return 0;
   } else {
     Serial.println("invalid stepper motor number");
     return -1;
   }
+}
+
+void display_text(Adafruit_SSD1306 display, char *string){
+  // Clear the buffer
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(10, 0);
+  display.println(string);
+  display.display();
 }
 
 void display_weight_in_grams(Adafruit_SSD1306 display, int weight) {
@@ -162,6 +161,7 @@ void display_weight_in_grams(Adafruit_SSD1306 display, int weight) {
 }
 
 void display_weight_in_grams(Adafruit_SSD1306 display, int digits, int weight) {
+  // this function still has some bugs
   //Serial.print("weight: ");
   //Serial.println(weight);
   display.clearDisplay();
@@ -205,16 +205,16 @@ void display_weight_in_grams(Adafruit_SSD1306 display, int digits, int weight) {
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(57600);
-  pinMode(STEP_1_PIN, OUTPUT);
-  pinMode(STEP_2_PIN, OUTPUT);
-  pinMode(DIR_1_PIN, OUTPUT);
-  pinMode(DIR_2_PIN, OUTPUT);
-  pinMode(LIM_SW_1_PIN, INPUT_PULLUP);
-  pinMode(LIM_SW_2_PIN, INPUT_PULLUP);
-  pinMode(BTN_1_PIN, INPUT_PULLUP);
-  pinMode(BTN_2_PIN, INPUT_PULLUP);
-  pinMode(BTN_3_PIN, INPUT_PULLUP);
-  pinMode(BTN_4_PIN, INPUT_PULLUP);
+  pinMode(RAIL_1_STP_PIN, OUTPUT);
+  pinMode(RAIL_2_STP_PIN, OUTPUT);
+  pinMode(RAIL_1_DIR_PIN, OUTPUT);
+  pinMode(RAIL_2_DIR_PIN, OUTPUT);
+  pinMode(RAIL_1_LIM_SW_PIN, INPUT_PULLUP);
+  pinMode(RAIL_2_LIM_SW_PIN, INPUT_PULLUP);
+  pinMode(RAIL_1_FWD_BTN_PIN, INPUT_PULLUP);
+  pinMode(RAIL_1_BWD_BTN_PIN, INPUT_PULLUP);
+  pinMode(RAIL_2_FWD_BTN_PIN, INPUT_PULLUP);
+  pinMode(RAIL_2_BWD_BTN_PIN, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -225,20 +225,28 @@ void setup() {
   display.display();
   delay(2000); // Pause for 2 seconds
   display_text(display, "setting up...");
-  for(int i = 0; i < 15000; i++) {
-    if (digitalRead(LIM_SW_1_PIN) == LOW) {
+  for(int i = 0; i < MAX_RAIL_STP; i++) {
+    //int tik = micros();
+    if (digitalRead(RAIL_1_LIM_SW_PIN) == LOW) {
       break;
     }
     step_backward(1, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+    // int tok = micros();
+    // Serial.print("time per step in homing rail 1: ");
+    // Serial.println(tok-tik);
   }
-  rail_1_state = 0;
-  for(int i = 0; i < 15000; i++) {
-    if (digitalRead(LIM_SW_2_PIN) == LOW) {
+  rail_1_abs_stp = 0;
+  for(int i = 0; i < MAX_RAIL_STP; i++) {
+    //int tik = micros();
+    if (digitalRead(RAIL_2_LIM_SW_PIN) == LOW) {
       break;
     }
     step_backward(2, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+    // int tok = micros();
+    // Serial.print("time per step in homing rail 2: ");
+    // Serial.println(tok-tik);
   }
-  rail_2_state = 0;
+  rail_2_abs_stp = 0;
   display.clearDisplay();
   display_text(display, "calibrating...");
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
@@ -248,67 +256,81 @@ void setup() {
   display.clearDisplay();
 }
 
-int btn_1_reading;
-int btn_2_reading;
-int btn_3_reading;
-int btn_4_reading;
+int rail_1_fwd_btn;
+int rail_1_bwd_btn;
+int rail_2_fwd_btn;
+int rail_2_bwd_btn;
+enum move_states {
+  NONE,
+  RAIL_1_FWD,
+  RAIL_1_BWD,
+  RAIL_2_FWD,
+  RAIL_2_BWD
+};
+enum move_states move_state = NONE;
+// consecutive relative step count variable
+int consec_rel_stp = 0;
 
 void loop() {
   // put your main code here, to run repeatedly:
-  btn_1_reading = digitalRead(BTN_1_PIN);
-  btn_2_reading = digitalRead(BTN_2_PIN);
-  btn_3_reading = digitalRead(BTN_3_PIN);
-  btn_4_reading = digitalRead(BTN_4_PIN);
-  if (btn_1_reading == LOW || btn_2_reading == LOW || btn_3_reading == LOW || btn_4_reading == LOW) {
+  //int tik = micros();
+  rail_1_fwd_btn = digitalRead(RAIL_1_FWD_BTN_PIN);
+  rail_1_bwd_btn = digitalRead(RAIL_1_BWD_BTN_PIN);
+  rail_2_fwd_btn = digitalRead(RAIL_2_FWD_BTN_PIN);
+  rail_2_bwd_btn = digitalRead(RAIL_2_BWD_BTN_PIN);
+  if (rail_1_fwd_btn == LOW || rail_1_bwd_btn == LOW || rail_2_fwd_btn == LOW || rail_2_bwd_btn == LOW) {
     digitalWrite(LED_BUILTIN, HIGH);
   } else {
     digitalWrite(LED_BUILTIN, LOW);
   }
 
-  if (btn_1_reading == LOW && rail_1_state == 0) {
-    display_text(display, "moving...");
-    // Makes 200 pulses for making one full cycle rotation
-    for(int i = 0; i < 15000; i++) {
-      //Serial.print("delay: ");
-      //Serial.println(ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
-      step_forward(1, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+  if (rail_1_fwd_btn == LOW && rail_1_abs_stp < MAX_RAIL_1_ABS_STP) {
+    if (move_state == NONE) {
+        display_text(display, "moving...");
     }
-    rail_1_state = 1;
-  }
-  else if (btn_2_reading == LOW && rail_1_state == 1) {
-    display_text(display, "moving...");
-    for(int i = 0; i < 15000; i++) {
-      if (digitalRead(LIM_SW_1_PIN) == LOW) {
-        break;
-      }
-      //Serial.print("delay: ");
-      //Serial.println(ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
-      step_backward(1, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+    if (move_state != RAIL_1_FWD){
+      move_state = RAIL_1_FWD;
+      consec_rel_stp = 0;
     }
-    rail_1_state = 0;
-  }
-  else if (btn_3_reading == LOW && rail_2_state == 0) {
-    display_text(display, "moving...");
-    for(int i = 0; i < 5000; i++) {
-      //Serial.print("delay: ");
-      //Serial.println(ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
-      step_forward(2, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+    step_forward(1, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, consec_rel_stp++));
+    rail_1_abs_stp += 1;
+  } else if (rail_1_bwd_btn == LOW && rail_1_abs_stp > 0) {
+    if (move_state == NONE) {
+        display_text(display, "moving...");
     }
-    rail_2_state = 1;
-  }
-  else if (btn_4_reading == LOW  && rail_2_state == 1) {
-    display_text(display, "moving...");
-    for(int i = 0; i < 5000; i++) {
-      if (digitalRead(LIM_SW_2_PIN) == LOW) {
-        break;
-      }
-      //Serial.print("delay: ");
-      //Serial.println(ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
-      step_backward(2, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, i));
+    if (move_state != RAIL_1_BWD){
+      move_state = RAIL_1_BWD;
+      consec_rel_stp = 0;
     }
-    rail_2_state = 0;
+    step_backward(1, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, consec_rel_stp++));
+    rail_1_abs_stp -= 1;
+  } else if (rail_2_fwd_btn == LOW && rail_2_abs_stp < MAX_RAIL_2_ABS_STP) {
+    if (move_state == NONE) {
+        display_text(display, "moving...");
+    }
+    if (move_state != RAIL_2_FWD){
+      move_state = RAIL_2_FWD;
+      consec_rel_stp = 0;
+    }
+    step_forward(2, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, consec_rel_stp++));
+    rail_2_abs_stp += 1;
+  } else if (rail_2_bwd_btn == LOW && rail_2_abs_stp > 0) {
+    if (move_state == NONE) {
+        display_text(display, "moving...");
+    }
+    if (move_state != RAIL_2_BWD){
+      move_state = RAIL_2_BWD;
+      consec_rel_stp = 0;
+    }
+    step_backward(2, ramp_down_step_delay(MIN_STEP_DELAY, MAX_STEP_DELAY, STEP_RAMP_DOWN_SLOPE, consec_rel_stp++));
+    rail_2_abs_stp -= 1;
+  } else {
+    move_state = NONE;
+    consec_rel_stp = 0;
+    display_weight_in_grams(display, scale.get_units());
+    //display_weight_in_grams(display, DISPLAY_WEIGHT_DIGITS, scale.get_units());
   }
-  display_weight_in_grams(display, scale.get_units());
-  //display_weight_in_grams(display, DISPLAY_WEIGHT_DIGITS, scale.get_units());
-  delay(100);
+  // int tok = micros();
+  // Serial.print("time per step in main loop: ");
+  // Serial.println(tok-tik);
 }
